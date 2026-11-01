@@ -13,6 +13,9 @@ class AuthRepository(
     private val api: AuthApi,
     private val tokenStore: RefreshTokenStore
 ) {
+    @Volatile
+    private var currentAccessToken: String? = null
+
     suspend fun login(email: String, password: String) =
         accept(api.login(LoginRequest(email.trim(), password)))
 
@@ -33,6 +36,19 @@ class AuthRepository(
         }
     }
 
+    suspend fun accessToken(): String {
+        currentAccessToken?.let { return it }
+        val savedToken = tokenStore.read()
+            ?: throw IllegalStateException("Sign in to continue")
+        return accept(api.refresh(RefreshRequest(savedToken))).accessToken
+    }
+
+    suspend fun refreshAccessToken(): String {
+        val savedToken = tokenStore.read()
+            ?: throw IllegalStateException("Sign in to continue")
+        return accept(api.refresh(RefreshRequest(savedToken))).accessToken
+    }
+
     suspend fun logout() {
         val token = tokenStore.read() ?: return
         try {
@@ -46,11 +62,13 @@ class AuthRepository(
                 }
         } finally {
             tokenStore.clear()
+            currentAccessToken = null
         }
     }
 
     private fun accept(response: AuthResponse): AuthResponse {
         tokenStore.write(response.refreshToken)
+        currentAccessToken = response.accessToken
         return response
     }
 }

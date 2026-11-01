@@ -2,6 +2,7 @@ package com.chatapp.ui
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.chatapp.api.toUserMessage
 import com.chatapp.api.UserProfile
 import com.chatapp.data.AuthRepository
 import kotlinx.coroutines.CancellationException
@@ -32,7 +33,7 @@ class AuthViewModel(private val repository: AuthRepository) : ViewModel() {
                     error.rethrowCancellation()
                     mutableState.value = AuthUiState(
                         busy = false,
-                        message = error.message ?: "Could not restore the saved session"
+                        message = error.toUserMessage()
                     )
                 }
         }
@@ -56,7 +57,7 @@ class AuthViewModel(private val repository: AuthRepository) : ViewModel() {
                 error.rethrowCancellation()
                 mutableState.value = AuthUiState(
                     busy = false,
-                    message = error.message ?: "Authentication failed"
+                    message = error.toUserMessage()
                 )
             }
         }
@@ -71,7 +72,7 @@ class AuthViewModel(private val repository: AuthRepository) : ViewModel() {
                     error.rethrowCancellation()
                     mutableState.value = AuthUiState(
                         busy = false,
-                        message = "Local session cleared; server logout failed: ${error.message ?: "unknown error"}"
+                        message = "Local session cleared; server logout failed: ${error.toUserMessage()}"
                     )
                 }
         }
