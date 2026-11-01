@@ -7,8 +7,10 @@ import com.chatapp.api.ChatUser
 import com.chatapp.api.CreateConversationRequest
 import com.chatapp.api.SendMessageRequest
 import io.socket.client.Socket
+import io.socket.client.Ack
 import io.socket.emitter.Emitter
 import kotlinx.coroutines.CancellationException
+import org.json.JSONObject
 
 class ChatRepository(
     private val api: ChatApi,
@@ -72,6 +74,7 @@ class ChatRepository(
     suspend fun connect(
         userId: String,
         onMessage: (ChatMessage) -> Unit,
+        onCallSignal: (String, JSONObject) -> Unit,
         onError: (String) -> Unit,
         onConnectionChanged: (Boolean) -> Unit
     ) {
@@ -96,7 +99,33 @@ class ChatRepository(
         activeSocket.on(Socket.EVENT_CONNECT_ERROR, Emitter.Listener {
             onError("Live connection unavailable; messages can still be refreshed")
         })
+        listOf("call:incoming", "call:accepted", "call:ended", "call:ice").forEach { event ->
+            activeSocket.on(event, Emitter.Listener { arguments ->
+                val payload = arguments.firstOrNull() as? JSONObject
+                if (payload == null) {
+                    onError("A call signal could not be read")
+                } else {
+                    onCallSignal(event, payload)
+                }
+            })
+        }
         activeSocket.connect()
+    }
+
+    fun sendCallSignal(
+        event: String,
+        payload: JSONObject,
+        callback: (JSONObject) -> Unit = {}
+    ) {
+        val activeSocket = socket
+        if (activeSocket == null || !activeSocket.connected()) {
+            callback(JSONObject().put("ok", false).put("error", "Live connection is unavailable"))
+            return
+        }
+        activeSocket.emit(event, payload, Ack { arguments ->
+            callback(arguments.firstOrNull() as? JSONObject
+                ?: JSONObject().put("ok", false).put("error", "Invalid call response"))
+        })
     }
 
     fun disconnect() {

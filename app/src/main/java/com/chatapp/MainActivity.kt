@@ -1,9 +1,13 @@
 package com.chatapp
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -54,12 +58,29 @@ import com.chatapp.api.ChatApi
 import com.chatapp.data.AuthRepository
 import com.chatapp.data.ChatCache
 import com.chatapp.data.ChatRepository
+import com.chatapp.data.WebRtcCallManager
 import com.chatapp.security.RefreshTokenStore
 import com.chatapp.ui.AuthViewModel
 import com.chatapp.ui.ChatUiState
 import com.chatapp.ui.ChatViewModel
 
 class MainActivity : ComponentActivity() {
+    private val callManager: WebRtcCallManager
+        get() = chatViewModel.callManager
+    private var afterPermissionGrant: (() -> Unit)? = null
+    private val callPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
+            val action = afterPermissionGrant
+            afterPermissionGrant = null
+            if (results.values.all { it }) {
+                action?.invoke()
+            } else if (callManager.state.value?.incoming == true) {
+                callManager.permissionDenied()
+            } else {
+                Toast.makeText(this, "Microphone and camera permissions are required for calls", Toast.LENGTH_LONG).show()
+            }
+        }
+
     private val authRepository by lazy {
         AuthRepository(
             AuthApi.create(BuildConfig.API_BASE_URL),
@@ -84,11 +105,12 @@ class MainActivity : ComponentActivity() {
             BuildConfig.API_BASE_URL,
             ChatCache(applicationContext, RefreshTokenStore(applicationContext))
         )
+        val manager = WebRtcCallManager(applicationContext)
         object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
             override fun <T : ViewModel> create(modelClass: Class<T>): T {
                 require(modelClass.isAssignableFrom(ChatViewModel::class.java))
-                return ChatViewModel(repository) as T
+                return ChatViewModel(repository, manager) as T
             }
         }
     }
@@ -100,32 +122,80 @@ class MainActivity : ComponentActivity() {
             val colors = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()
             MaterialTheme(colorScheme = colors) {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    AppScreen(viewModel, chatViewModel)
+                    AppScreen(
+                        viewModel,
+                        chatViewModel,
+                        callManager,
+                        onRequestCallPermissions = ::requestCallPermissions
+                    )
                 }
             }
+        }
+    }
+
+    private fun requestCallPermissions(video: Boolean, action: () -> Unit) {
+        val required = if (video) {
+            arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA)
+        } else {
+            arrayOf(Manifest.permission.RECORD_AUDIO)
+        }
+        val missing = required.filter {
+            checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED
+        }.toTypedArray()
+        if (missing.isEmpty()) {
+            action()
+        } else {
+            afterPermissionGrant = action
+            callPermissionLauncher.launch(missing)
         }
     }
 }
 
 @Composable
-private fun AppScreen(authViewModel: AuthViewModel, chatViewModel: ChatViewModel) {
+private fun AppScreen(
+    authViewModel: AuthViewModel,
+    chatViewModel: ChatViewModel,
+    callManager: WebRtcCallManager,
+    onRequestCallPermissions: (Boolean, () -> Unit) -> Unit
+) {
     val auth by authViewModel.state.collectAsState()
     val chat by chatViewModel.state.collectAsState()
+    val call by callManager.state.collectAsState()
     val userId = auth.user?.id
 
     LaunchedEffect(userId, auth.busy) {
-        if (userId != null) {
+        if (userId != null && !auth.busy) {
             chatViewModel.startSession(userId)
         } else if (!auth.busy) {
             chatViewModel.clearSession()
         }
     }
 
-    if (userId != null) {
+    if (call != null) {
+        ActiveCallScreen(
+            state = call,
+            callManager = callManager,
+            onAccept = {
+                onRequestCallPermissions(call?.mediaType == "video", chatViewModel::acceptCall)
+            },
+            onDecline = chatViewModel::declineCall,
+            onEnd = chatViewModel::endCall,
+            onToggleMicrophone = chatViewModel::toggleMicrophone,
+            onToggleCamera = chatViewModel::toggleCamera,
+            onSwitchCamera = chatViewModel::switchCamera,
+            onToggleSpeaker = chatViewModel::toggleSpeaker,
+            onDismiss = chatViewModel::dismissCall
+        )
+    } else if (userId != null) {
+        val startCall: (String) -> Unit = { mediaType ->
+            onRequestCallPermissions(mediaType == "video") {
+                chatViewModel.startCall(mediaType)
+            }
+        }
         if (chat.selectedConversation == null) {
             ConversationListScreen(chat, userId, chatViewModel, authViewModel::logout)
         } else {
-            ConversationScreen(chat, userId, chatViewModel)
+            ConversationScreen(chat, userId, chatViewModel, startCall)
         }
     } else {
         AuthScreen(authViewModel)
@@ -271,12 +341,6 @@ private fun ConversationListScreen(
                     }
                     Text("Message", color = MaterialTheme.colorScheme.primary)
                 }
-                Text(
-                    if (state.liveConnected) "Live" else "Reconnecting…",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(start = 16.dp, bottom = 8.dp)
-                )
                 HorizontalDivider()
             }
         }
@@ -316,7 +380,12 @@ private fun ConversationListScreen(
 }
 
 @Composable
-private fun ConversationScreen(state: ChatUiState, userId: String, chatViewModel: ChatViewModel) {
+private fun ConversationScreen(
+    state: ChatUiState,
+    userId: String,
+    chatViewModel: ChatViewModel,
+    onStartCall: (String) -> Unit
+) {
     val conversation = state.selectedConversation ?: return
     val other = conversation.otherParticipant(userId)
     var draft by remember(conversation.id) { mutableStateOf("") }
@@ -343,6 +412,21 @@ private fun ConversationScreen(state: ChatUiState, userId: String, chatViewModel
                 if (other != null) {
                     Text("@${other.username}", style = MaterialTheme.typography.bodySmall)
                 }
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                if (state.liveConnected) "Live" else "Reconnecting…",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row {
+                TextButton(onClick = { onStartCall("audio") }) { Text("Audio") }
+                TextButton(onClick = { onStartCall("video") }) { Text("Video") }
             }
         }
         HorizontalDivider()

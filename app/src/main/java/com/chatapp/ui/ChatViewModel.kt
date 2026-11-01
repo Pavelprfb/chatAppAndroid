@@ -7,6 +7,7 @@ import com.chatapp.api.ChatMessage
 import com.chatapp.api.ChatUser
 import com.chatapp.api.toUserMessage
 import com.chatapp.data.ChatRepository
+import com.chatapp.data.WebRtcCallManager
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -28,10 +29,17 @@ data class ChatUiState(
     val error: String? = null
 )
 
-class ChatViewModel(private val repository: ChatRepository) : ViewModel() {
+class ChatViewModel(
+    private val repository: ChatRepository,
+    val callManager: WebRtcCallManager
+) : ViewModel() {
     private val mutableState = MutableStateFlow(ChatUiState())
     val state = mutableState.asStateFlow()
     private var searchJob: Job? = null
+
+    init {
+        callManager.setSignalSender(repository::sendCallSignal)
+    }
 
     fun startSession(userId: String) {
         if (mutableState.value.userId == userId) return
@@ -48,6 +56,7 @@ class ChatViewModel(private val repository: ChatRepository) : ViewModel() {
                 repository.connect(
                     userId = userId,
                     onMessage = ::receiveMessage,
+                    onCallSignal = callManager::onSignal,
                     onError = { message ->
                         mutableState.value = mutableState.value.copy(error = message)
                     },
@@ -75,9 +84,37 @@ class ChatViewModel(private val repository: ChatRepository) : ViewModel() {
 
     fun clearSession() {
         searchJob?.cancel()
+        callManager.endCall()
+        callManager.dismissCall()
         repository.clearOwnerCache()
         mutableState.value = ChatUiState()
     }
+
+    fun startCall(mediaType: String) {
+        val conversation = mutableState.value.selectedConversation ?: return
+        val participant = conversation.otherParticipant(mutableState.value.userId)
+        callManager.startCall(
+            conversationId = conversation.id,
+            participantName = participant?.displayName ?: "ChatApp user",
+            mediaType = mediaType
+        )
+    }
+
+    fun acceptCall() = callManager.acceptCall()
+
+    fun declineCall() = callManager.declineCall()
+
+    fun endCall() = callManager.endCall()
+
+    fun toggleMicrophone() = callManager.toggleMicrophone()
+
+    fun toggleCamera() = callManager.toggleCamera()
+
+    fun switchCamera() = callManager.switchCamera()
+
+    fun toggleSpeaker() = callManager.toggleSpeaker()
+
+    fun dismissCall() = callManager.dismissCall()
 
     fun search(query: String) {
         mutableState.value = mutableState.value.copy(searchQuery = query, error = null)
@@ -230,5 +267,11 @@ class ChatViewModel(private val repository: ChatRepository) : ViewModel() {
 
     private fun Throwable.rethrowCancellation() {
         if (this is CancellationException) throw this
+    }
+
+    override fun onCleared() {
+        callManager.dispose()
+        repository.disconnect()
+        super.onCleared()
     }
 }

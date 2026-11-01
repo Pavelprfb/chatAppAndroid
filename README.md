@@ -6,8 +6,15 @@ authenticated real-time message updates. Refresh tokens are encrypted with an
 AES-GCM key held in Android Keystore. Conversation lists, recent messages, and
 user-search results are cached locally with AES-GCM encryption and displayed
 before a network refresh; sending still requires a network connection. FCM
-notifications, audio/video calls, location, groups, attachment sharing, and
-E2EE have not been implemented.
+notifications for background incoming calls, location, groups, attachment
+sharing, and E2EE have not been implemented.
+
+One-to-one audio/video calls use WebRTC media with authenticated Socket.IO
+signaling. The call screen supports accept/decline/end, mute, speaker routing,
+camera on/off, and switching cameras. Calls require the app to be online and
+open on both devices; configure TURN credentials on the backend for reliable
+connections across restrictive NATs. Background ringing and push delivery
+require an FCM integration and are not available.
 
 ## Requirements
 
