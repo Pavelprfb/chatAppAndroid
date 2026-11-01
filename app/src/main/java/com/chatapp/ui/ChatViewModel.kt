@@ -34,7 +34,15 @@ class ChatViewModel(private val repository: ChatRepository) : ViewModel() {
         repository.disconnect()
         mutableState.value = ChatUiState(userId = userId, busy = true)
         viewModelScope.launch(Dispatchers.IO) {
-            runCatching { repository.conversations() }
+            runCatching {
+                repository.connect(
+                    onMessage = ::receiveMessage,
+                    onError = { message ->
+                        mutableState.value = mutableState.value.copy(error = message)
+                    }
+                )
+                repository.conversations()
+            }
                 .onSuccess { conversations ->
                     mutableState.value = mutableState.value.copy(
                         conversations = conversations,
@@ -105,13 +113,6 @@ class ChatViewModel(private val repository: ChatRepository) : ViewModel() {
         )
         viewModelScope.launch(Dispatchers.IO) {
             runCatching {
-                repository.connect(
-                    conversation.id,
-                    onMessage = ::receiveMessage,
-                    onError = { message ->
-                        mutableState.value = mutableState.value.copy(error = message)
-                    }
-                )
                 repository.messages(conversation.id)
             }.onSuccess { messages ->
                 if (mutableState.value.selectedConversation?.id == conversation.id) {
@@ -162,6 +163,7 @@ class ChatViewModel(private val repository: ChatRepository) : ViewModel() {
 
     private fun receiveMessage(message: ChatMessage) {
         val current = mutableState.value
+        val conversationExists = current.conversations.any { it.id == message.conversationId }
         val conversations = current.conversations.map { conversation ->
             if (conversation.id == message.conversationId) {
                 conversation.copy(lastMessage = message)
@@ -176,6 +178,9 @@ class ChatViewModel(private val repository: ChatRepository) : ViewModel() {
             current.messages
         }
         mutableState.value = current.copy(conversations = conversations, messages = messages)
+        if (!conversationExists) {
+            viewModelScope.launch(Dispatchers.IO) { refreshConversations() }
+        }
     }
 
     private suspend fun refreshConversations() {

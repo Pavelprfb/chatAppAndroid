@@ -32,18 +32,11 @@ class ChatRepository(
     suspend fun sendMessage(conversationId: String, content: String): ChatMessage =
         withAuthorization { api.sendMessage(it, conversationId, SendMessageRequest(content)) }
 
-    suspend fun connect(
-        conversationId: String,
-        onMessage: (ChatMessage) -> Unit,
-        onError: (String) -> Unit
-    ) {
+    suspend fun connect(onMessage: (ChatMessage) -> Unit, onError: (String) -> Unit) {
         disconnect()
         val accessToken = authRepository.refreshAccessToken()
         val activeSocket = ChatApi.connectSocket(baseUrl, accessToken)
         socket = activeSocket
-        activeSocket.on(Socket.EVENT_CONNECT, Emitter.Listener {
-            activeSocket.emit("conversation:join", mapOf("conversationId" to conversationId))
-        })
         activeSocket.on("message:new", Emitter.Listener { arguments ->
             arguments.firstOrNull()?.let { payload ->
                 runCatching { ChatApi.decodeMessage(payload) }
