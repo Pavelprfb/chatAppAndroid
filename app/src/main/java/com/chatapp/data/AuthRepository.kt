@@ -52,9 +52,9 @@ class AuthRepository(
     suspend fun logout() {
         val token = tokenStore.read() ?: return
         try {
-            val accessToken = api.refresh(RefreshRequest(token))
-            tokenStore.write(accessToken.refreshToken)
-            api.logout("Bearer ${accessToken.accessToken}", LogoutRequest(accessToken.refreshToken))
+            val authResponse = api.refresh(RefreshRequest(token))
+            tokenStore.write(authResponse.refreshToken)
+            api.logout(authResponse.accessToken, LogoutRequest(authResponse.refreshToken))
                 .also { response ->
                     if (!response.isSuccessful) {
                         throw retrofit2.HttpException(response)

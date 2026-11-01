@@ -52,6 +52,7 @@ import androidx.lifecycle.ViewModelProvider
 import com.chatapp.api.AuthApi
 import com.chatapp.api.ChatApi
 import com.chatapp.data.AuthRepository
+import com.chatapp.data.ChatCache
 import com.chatapp.data.ChatRepository
 import com.chatapp.security.RefreshTokenStore
 import com.chatapp.ui.AuthViewModel
@@ -80,7 +81,8 @@ class MainActivity : ComponentActivity() {
         val repository = ChatRepository(
             ChatApi.create(BuildConfig.API_BASE_URL),
             authRepository,
-            BuildConfig.API_BASE_URL
+            BuildConfig.API_BASE_URL,
+            ChatCache(applicationContext, RefreshTokenStore(applicationContext))
         )
         object : ViewModelProvider.Factory {
             @Suppress("UNCHECKED_CAST")
@@ -231,6 +233,12 @@ private fun ConversationListScreen(
             Text("Chats", style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.Bold)
             TextButton(onClick = onLogout) { Text("Log out") }
         }
+        Text(
+            if (state.liveConnected) "Live messages connected" else "Connecting to live messages…",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(bottom = 8.dp)
+        )
         OutlinedTextField(
             value = state.searchQuery,
             onValueChange = chatViewModel::search,
@@ -263,6 +271,12 @@ private fun ConversationListScreen(
                     }
                     Text("Message", color = MaterialTheme.colorScheme.primary)
                 }
+                Text(
+                    if (state.liveConnected) "Live" else "Reconnecting…",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(start = 16.dp, bottom = 8.dp)
+                )
                 HorizontalDivider()
             }
         }

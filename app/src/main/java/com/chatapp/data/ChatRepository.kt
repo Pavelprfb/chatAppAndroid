@@ -13,30 +13,79 @@ import kotlinx.coroutines.CancellationException
 class ChatRepository(
     private val api: ChatApi,
     private val authRepository: AuthRepository,
-    private val baseUrl: String
+    private val baseUrl: String,
+    private val cache: ChatCache
 ) {
     private var socket: Socket? = null
+    @Volatile
+    private var ownerId: String? = null
+
+    fun cachedSearchUsers(query: String): List<ChatUser>? {
+        val owner = ownerId ?: return null
+        return cache.search(owner, query)
+    }
 
     suspend fun searchUsers(query: String): List<ChatUser> =
-        withAuthorization { api.searchUsers(it, query) }
+        withAuthorization { token ->
+            api.searchUsers(token, query).also { users ->
+                ownerId?.let { cache.saveSearch(it, query, users) }
+            }
+        }
+
+    fun cachedConversations(): List<ChatConversation> {
+        val owner = ownerId ?: return emptyList()
+        return cache.conversations(owner)
+    }
+
+    fun useOwner(userId: String) {
+        ownerId = userId
+    }
+
+    fun cacheConversations(conversations: List<ChatConversation>) {
+        ownerId?.let { cache.saveConversations(it, conversations) }
+    }
 
     suspend fun conversations(): List<ChatConversation> =
-        withAuthorization(api::conversations)
+        withAuthorization(api::conversations).also { conversations ->
+            ownerId?.let { cache.saveConversations(it, conversations) }
+        }
 
     suspend fun createConversation(participantId: String): ChatConversation =
         withAuthorization { api.createConversation(it, CreateConversationRequest(participantId)) }
 
+    fun cachedMessages(conversationId: String): List<ChatMessage> {
+        val owner = ownerId ?: return emptyList()
+        return cache.messages(owner, conversationId)
+    }
+
     suspend fun messages(conversationId: String): List<ChatMessage> =
-        withAuthorization { api.messages(it, conversationId) }
+        withAuthorization { api.messages(it, conversationId) }.also { messages ->
+            ownerId?.let { cache.saveMessages(it, conversationId, messages) }
+        }
 
     suspend fun sendMessage(conversationId: String, content: String): ChatMessage =
         withAuthorization { api.sendMessage(it, conversationId, SendMessageRequest(content)) }
+            .also { message ->
+                ownerId?.let { cache.saveMessages(it, conversationId, listOf(message)) }
+            }
 
-    suspend fun connect(onMessage: (ChatMessage) -> Unit, onError: (String) -> Unit) {
+    suspend fun connect(
+        userId: String,
+        onMessage: (ChatMessage) -> Unit,
+        onError: (String) -> Unit,
+        onConnectionChanged: (Boolean) -> Unit
+    ) {
         disconnect()
+        ownerId = userId
         val accessToken = authRepository.refreshAccessToken()
         val activeSocket = ChatApi.connectSocket(baseUrl, accessToken)
         socket = activeSocket
+        activeSocket.on(Socket.EVENT_CONNECT, Emitter.Listener {
+            onConnectionChanged(true)
+        })
+        activeSocket.on(Socket.EVENT_DISCONNECT, Emitter.Listener {
+            onConnectionChanged(false)
+        })
         activeSocket.on("message:new", Emitter.Listener { arguments ->
             arguments.firstOrNull()?.let { payload ->
                 runCatching { ChatApi.decodeMessage(payload) }
@@ -56,16 +105,26 @@ class ChatRepository(
         socket = null
     }
 
+    fun clearOwnerCache() {
+        ownerId?.let(cache::clearOwner)
+        ownerId = null
+        disconnect()
+    }
+
+    fun cacheMessage(message: ChatMessage) {
+        ownerId?.let { cache.saveMessages(it, message.conversationId, listOf(message)) }
+    }
+
     private suspend fun <T> withAuthorization(request: suspend (String) -> T): T {
         val firstToken = authRepository.accessToken()
         return try {
-            request("Bearer $firstToken")
+            request(firstToken)
         } catch (error: Exception) {
             if (error is CancellationException) throw error
             if (!ChatApi.isUnauthorized(error)) {
                 throw error
             }
-            request("Bearer ${authRepository.refreshAccessToken()}")
+            request(authRepository.refreshAccessToken())
         }
     }
 }

@@ -3,9 +3,11 @@
 Native Kotlin and Jetpack Compose registration/login client for the ChatApp
 authentication API, direct conversation search, persistent text messaging, and
 authenticated real-time message updates. Refresh tokens are encrypted with an
-AES-GCM key held in Android Keystore. FCM notifications, calls, location,
-groups, attachment sharing, offline message storage, and E2EE have not been
-implemented.
+AES-GCM key held in Android Keystore. Conversation lists, recent messages, and
+user-search results are cached locally with AES-GCM encryption and displayed
+before a network refresh; sending still requires a network connection. FCM
+notifications, audio/video calls, location, groups, attachment sharing, and
+E2EE have not been implemented.
 
 ## Requirements
 

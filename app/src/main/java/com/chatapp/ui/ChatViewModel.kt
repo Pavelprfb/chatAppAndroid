@@ -9,6 +9,8 @@ import com.chatapp.api.toUserMessage
 import com.chatapp.data.ChatRepository
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
@@ -22,23 +24,35 @@ data class ChatUiState(
     val searchResults: List<ChatUser> = emptyList(),
     val busy: Boolean = false,
     val sending: Boolean = false,
+    val liveConnected: Boolean = false,
     val error: String? = null
 )
 
 class ChatViewModel(private val repository: ChatRepository) : ViewModel() {
     private val mutableState = MutableStateFlow(ChatUiState())
     val state = mutableState.asStateFlow()
+    private var searchJob: Job? = null
 
     fun startSession(userId: String) {
         if (mutableState.value.userId == userId) return
         repository.disconnect()
+        repository.useOwner(userId)
         mutableState.value = ChatUiState(userId = userId, busy = true)
         viewModelScope.launch(Dispatchers.IO) {
+            val cached = repository.cachedConversations()
+            mutableState.value = mutableState.value.copy(
+                conversations = cached,
+                busy = cached.isEmpty()
+            )
             runCatching {
                 repository.connect(
+                    userId = userId,
                     onMessage = ::receiveMessage,
                     onError = { message ->
                         mutableState.value = mutableState.value.copy(error = message)
+                    },
+                    onConnectionChanged = { connected ->
+                        mutableState.value = mutableState.value.copy(liveConnected = connected)
                     }
                 )
                 repository.conversations()
@@ -60,20 +74,31 @@ class ChatViewModel(private val repository: ChatRepository) : ViewModel() {
     }
 
     fun clearSession() {
-        repository.disconnect()
+        searchJob?.cancel()
+        repository.clearOwnerCache()
         mutableState.value = ChatUiState()
     }
 
     fun search(query: String) {
         mutableState.value = mutableState.value.copy(searchQuery = query, error = null)
+        searchJob?.cancel()
         if (query.trim().length < 2) {
             mutableState.value = mutableState.value.copy(searchResults = emptyList())
             return
         }
-        viewModelScope.launch(Dispatchers.IO) {
-            runCatching { repository.searchUsers(query.trim()) }
+        searchJob = viewModelScope.launch(Dispatchers.IO) {
+            val normalizedQuery = query.trim()
+            val cached = repository.cachedSearchUsers(normalizedQuery)
+            if (cached != null && mutableState.value.searchQuery.trim() == normalizedQuery) {
+                mutableState.value = mutableState.value.copy(searchResults = cached)
+            }
+            delay(300)
+            if (mutableState.value.searchQuery.trim() != normalizedQuery) return@launch
+            runCatching { repository.searchUsers(normalizedQuery) }
                 .onSuccess { users ->
-                    mutableState.value = mutableState.value.copy(searchResults = users)
+                    if (mutableState.value.searchQuery.trim() == normalizedQuery) {
+                        mutableState.value = mutableState.value.copy(searchResults = users)
+                    }
                 }
                 .onFailure { error ->
                     error.rethrowCancellation()
@@ -105,10 +130,11 @@ class ChatViewModel(private val repository: ChatRepository) : ViewModel() {
     }
 
     fun openConversation(conversation: ChatConversation) {
+        val cached = repository.cachedMessages(conversation.id)
         mutableState.value = mutableState.value.copy(
             selectedConversation = conversation,
-            messages = emptyList(),
-            busy = true,
+            messages = cached,
+            busy = cached.isEmpty(),
             error = null
         )
         viewModelScope.launch(Dispatchers.IO) {
@@ -132,7 +158,6 @@ class ChatViewModel(private val repository: ChatRepository) : ViewModel() {
     }
 
     fun closeConversation() {
-        repository.disconnect()
         mutableState.value = mutableState.value.copy(
             selectedConversation = null,
             messages = emptyList(),
@@ -162,21 +187,23 @@ class ChatViewModel(private val repository: ChatRepository) : ViewModel() {
     }
 
     private fun receiveMessage(message: ChatMessage) {
+        repository.cacheMessage(message)
         val current = mutableState.value
         val conversationExists = current.conversations.any { it.id == message.conversationId }
         val conversations = current.conversations.map { conversation ->
             if (conversation.id == message.conversationId) {
-                conversation.copy(lastMessage = message)
+                conversation.copy(lastMessage = message, updatedAt = message.createdAt)
             } else {
                 conversation
             }
-        }.sortedByDescending { it.id == message.conversationId }
+        }.sortedByDescending { it.updatedAt }
 
         val messages = if (current.selectedConversation?.id == message.conversationId) {
             mergeMessages(current.messages, listOf(message))
         } else {
             current.messages
         }
+        repository.cacheConversations(conversations)
         mutableState.value = current.copy(conversations = conversations, messages = messages)
         if (!conversationExists) {
             viewModelScope.launch(Dispatchers.IO) { refreshConversations() }
